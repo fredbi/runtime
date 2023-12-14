@@ -16,11 +16,13 @@ package middleware
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	fpath "path"
 	"regexp"
 	"strings"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/go-openapi/runtime/security"
 	"github.com/go-openapi/swag"
 
@@ -265,12 +267,14 @@ func (ras RouteAuthenticators) Authenticate(req *http.Request, route *MatchedRou
 			continue
 		}
 		applies, usr, err := ra.Authenticate(req, route)
+		log.Printf("DEBUG: %v, nil? %t, err: %v", spew.Sdump(usr), usr == nil, err)
 		if !applies || err != nil || usr == nil {
 			if err != nil {
 				lastError = err
 			}
 			continue
 		}
+		log.Printf("DEBUG exit 1: applies: %t, user=%v, usr==nil? %t, err: %v", applies, spew.Sdump(usr), usr == nil, err)
 		return applies, usr, nil
 	}
 

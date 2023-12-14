@@ -18,6 +18,10 @@ type countAuthenticator struct {
 	err       error
 }
 
+type principalType struct {
+	Name string
+}
+
 func (c *countAuthenticator) Authenticate(_ interface{}) (bool, interface{}, error) {
 	c.count++
 	return c.applies, c.principal, c.err
@@ -37,18 +41,28 @@ var (
 	noApplyAuth = runtime.AuthenticatorFunc(func(_ interface{}) (bool, interface{}, error) {
 		return false, nil, nil
 	})
+	successAuthWithPointer = runtime.AuthenticatorFunc(func(_ interface{}) (bool, interface{}, error) {
+		return true, &principalType{Name: "the user"}, nil
+	})
+	failAuthWithPointer = runtime.AuthenticatorFunc(func(_ interface{}) (bool, interface{}, error) {
+		var typedPrincipal *principalType
+		return true, typedPrincipal, errors.New("unauthenticated")
+	})
+	failAuthWithNilPointer = runtime.AuthenticatorFunc(func(_ interface{}) (bool, interface{}, error) {
+		var typedPrincipal *principalType
+		return true, typedPrincipal, nil
+	})
 )
 
 func TestAuthenticateSingle(t *testing.T) {
 	ra := RouteAuthenticator{
 		Authenticator: map[string]runtime.Authenticator{
-			"auth1": successAuth,
+			"auth1": successAuthWithPointer,
 		},
 		Schemes: []string{"auth1"},
 		Scopes:  map[string][]string{"auth1": nil},
 	}
 	ras := RouteAuthenticators([]RouteAuthenticator{ra})
-
 	require.False(t, ras.AllowsAnonymous())
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
@@ -59,6 +73,68 @@ func TestAuthenticateSingle(t *testing.T) {
 	require.Equal(t, "the user", prin)
 
 	require.Equal(t, ra, *route.Authenticator)
+}
+
+func TestAuthenticateWrong(t *testing.T) {
+	t.Run("with principal as a pointer to a concrete type", func(t *testing.T) {
+		t.Run("should authenticate", func(t *testing.T) {
+			ra := RouteAuthenticator{
+				Authenticator: map[string]runtime.Authenticator{
+					"auth1": successAuthWithPointer,
+				},
+				Schemes: []string{"auth1"},
+				Scopes:  map[string][]string{"auth1": nil},
+			}
+			ras := RouteAuthenticators([]RouteAuthenticator{ra})
+
+			require.False(t, ras.AllowsAnonymous())
+
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+			route := &MatchedRoute{}
+			ok, prin, err := ras.Authenticate(req, route)
+			require.NoError(t, err)
+			require.True(t, ok)
+			require.EqualValues(t, &principalType{Name: "the user"}, prin)
+		})
+		t.Run("should not authenticate", func(t *testing.T) {
+			ra := RouteAuthenticator{
+				Authenticator: map[string]runtime.Authenticator{
+					"auth1": failAuthWithPointer,
+				},
+				Schemes: []string{"auth1"},
+				Scopes:  map[string][]string{"auth1": nil},
+			}
+			ras := RouteAuthenticators([]RouteAuthenticator{ra})
+
+			require.False(t, ras.AllowsAnonymous())
+
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+			route := &MatchedRoute{}
+			ok, prin, err := ras.Authenticate(req, route)
+			require.Error(t, err)
+			require.True(t, ok)
+			require.Nil(t, prin)
+		})
+		t.Run("should yield nil principal", func(t *testing.T) {
+			ra := RouteAuthenticator{
+				Authenticator: map[string]runtime.Authenticator{
+					"auth1": failAuthWithNilPointer,
+				},
+				Schemes: []string{"auth1"},
+				Scopes:  map[string][]string{"auth1": nil},
+			}
+			ras := RouteAuthenticators([]RouteAuthenticator{ra})
+
+			require.False(t, ras.AllowsAnonymous())
+
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+			route := &MatchedRoute{}
+			ok, prin, err := ras.Authenticate(req, route)
+			require.NoError(t, err)
+			require.True(t, ok)
+			require.Nil(t, prin)
+		})
+	})
 }
 
 func TestAuthenticateLogicalOr(t *testing.T) {
