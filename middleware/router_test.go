@@ -348,52 +348,93 @@ func TestExtractCompositParameters(t *testing.T) {
 }
 
 func TestRouterContext_Issue375(t *testing.T) {
+	// asserts request context propagation in a middleware stack:
+	//
+	// startStack -> Router -> customHandler -> endStack
 	spec, api := petstore.NewAPI(t)
 	spec.Spec().BasePath = "/api/"
-	context := NewContext(spec, api, nil)
+	apiContext := NewContext(spec, api, nil)
 
-	type authCtxKey uint8
-	const authCtx authCtxKey = iota + 1
-	authCtxErr := stderrors.New("test error in context")
+	type ctxKey uint8
 
-	mw := NewRouter(context, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// check context after API middleware
-		value := r.Context().Value(authCtx)
-		assert.NotNilf(t, value, "end of middleware chain: expected to find authCtx in request context")
-		if value == nil {
+	const (
+		beforeCtx ctxKey = iota + 1
+		afterCtx
+	)
+
+	beforeCtxErr := stderrors.New("test error inserted in context before routing")
+	afterCtxErr := stderrors.New("test error inserted in context after routing")
+
+	// endStack is invoked after the custom handler
+	endStack := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Logf("called endStack")
+
+		beforeValue := r.Context().Value(beforeCtx)
+		assert.NotNilf(t, beforeValue, "end of middleware chain: expected to find beforeCtx in request context")
+		if beforeValue == nil {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+		afterValue := r.Context().Value(afterCtx)
+		assert.NotNilf(t, afterValue, "end of middleware chain: expected to find afterCtx in request context")
+		if afterValue == nil {
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 
-		errAuth, ok := value.(error)
-		assert.Truef(t, ok, "expected authCtx to be an error, but got: %T", value)
+		fmt.Fprintf(w, `{beforeCtx="%v",afterCtx="%v"}`, beforeValue, afterValue)
+	})
+
+	// custom handler asserts that the initial context has been conveyed and adds some new context value
+	customHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// check context after API middleware
+		beforeValue := r.Context().Value(beforeCtx)
+		assert.NotNilf(t, beforeValue, "after routing: expected to find beforeCtx in request context")
+		if beforeValue == nil {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+
+		errAuth, ok := beforeValue.(error)
+		assert.Truef(t, ok, "expected beforeCtx to be an error, but got: %T", beforeValue)
 		if !ok {
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 
-		t.Logf("got context from request: %v", errAuth)
-		fmt.Fprintf(w, "%v", errAuth)
-		w.WriteHeader(http.StatusOK)
-	}))
+		t.Logf(`called customHandler with beforeCtx from request: "%v"`, errAuth)
 
-	start := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authContext := stdcontext.WithValue(r.Context(), authCtx, authCtxErr)
+		// insert new context after API middleware
+		afterContext := stdcontext.WithValue(r.Context(), afterCtx, afterCtxErr)
+		*r = *r.WithContext(afterContext)
 
-		t.Logf("calling API router with context: %v", authCtxErr)
-		//	mw.ServeHTTP(w, r.WithContext(authContext))
-		*r = *r.WithContext(authContext)
-		mw.ServeHTTP(w, r)
+		//endStack.ServeHTTP(w, r.WithContext(afterContext))
+		endStack.ServeHTTP(w, r)
+	})
+
+	// router invokes customHandler for this API context
+	router := NewRouter(apiContext, customHandler)
+
+	// startStack sets some context then invokes router
+	startStack := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		beforeContext := stdcontext.WithValue(r.Context(), beforeCtx, beforeCtxErr)
+		t.Logf(`calling router with initial context: "%v"`, beforeCtxErr)
+
+		router.ServeHTTP(w, r.WithContext(beforeContext))
 	})
 
 	recorder := httptest.NewRecorder()
 	request, err := http.NewRequestWithContext(stdcontext.Background(), http.MethodGet, "/api/pets/123", nil)
 	require.NoError(t, err)
 
-	start.ServeHTTP(recorder, request)
+	startStack.ServeHTTP(recorder, request)
 	assert.Equal(t, http.StatusOK, recorder.Code)
+
+	beforeValue := request.Context().Value(beforeCtx)
+	t.Logf("before value in request: %v", beforeValue)
+	afterValue := request.Context().Value(afterCtx)
+	t.Logf("after value in request: %v", afterValue)
 
 	res := recorder.Result()
 	require.NotNil(t, res.Body)
 	msg, err := io.ReadAll(res.Body)
 	require.NoError(t, err)
+
 	t.Logf("response message: %q", string(msg))
 }
