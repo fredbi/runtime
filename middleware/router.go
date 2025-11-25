@@ -5,6 +5,7 @@ package middleware
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	fpath "path"
@@ -64,7 +65,10 @@ func NewRouter(ctx *Context, next http.Handler) http.Handler {
 
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		if _, rCtx, ok := ctx.RouteInfo(r); ok {
+			log.Println("handling RouteInfo")
 			next.ServeHTTP(rw, rCtx)
+			//*r = *rCtx
+
 			return
 		}
 
