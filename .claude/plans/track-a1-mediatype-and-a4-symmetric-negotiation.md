@@ -1,6 +1,6 @@
 # Track A.1 + A.4 — Typed `MediaType` and symmetric negotiation
 
-Status: in progress.
+Status: complete.
 Scope: introduce a typed `MediaType` value (Track A.1) and rewire
 server-side content negotiation on top of it, defaulting to
 parameter-honoring behaviour with an explicit opt-out (Track A.4).

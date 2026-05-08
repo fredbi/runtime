@@ -44,6 +44,8 @@ The five issues map onto these layers:
 
 #### A.1 — Introduce a typed `MediaType` value and a `MediaTypeSet`
 
+Status: complete.
+
 A new lightweight package (proposed: `internal/mediatype`, promoted to
 `mediatype` once stable) holding:
 
@@ -133,6 +135,8 @@ matters; defer until benchmarked). We must keep the selection *deterministic*
 — users debugging a 415 should not have to read goroutine traces.
 
 #### A.4 — Symmetric server-side negotiation
+
+Status: complete.
 
 `NegotiateContentType` in `middleware/negotiate.go` keeps its q-value
 algorithm but switches to the new `MediaType` value, so `produces:
@@ -240,6 +244,8 @@ var NegotiateContentType = negotiate.ContentType
 
 ### B.1 — Extract `negotiate`
 
+Status: complete.
+
 **Scope.**  `middleware/negotiate.go` + `middleware/header/`. Stdlib-only
 today, modulo the local `header` package. Clean cut.
 
@@ -252,6 +258,8 @@ today, modulo the local `header` package. Clean cut.
 **Effort:** small. ~1 day.
 
 ### B.2 — Extract `docui`
+
+Status: complete.
 
 **Scope.** `swaggerui.go`, `swaggerui_oauth2.go`, `redoc.go`, `rapidoc.go`,
 `spec.go`, `ui_options.go`. All stdlib-only. The embedded HTML templates
