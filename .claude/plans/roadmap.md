@@ -35,7 +35,7 @@ versions at release time (current policy: support the 2 latest).
   * ✅ **Layered RFC 6839 / RFC 9512 media-type tolerance** (`fix/140-json-dialects`, merged into `v0.30` line)
   * ✅ **`YAMLMime` flipped to RFC 9512 canonical** with the legacy aliases bridged transparently
   * ✅ **`docs/MEDIA_TYPES.md` client-inbound expansion**
-  * ✅ **`runtime.BindForm` upload-file helper** (was Track B.3 `ParseRequestBody`) — shipped on `feat/upload-file-helper` (commit `90364c5`). Orchestrator helper that dedupes the multipart/form fallback dance plus per-file binding the generator emits; security caps (`BindFormMaxBody`, `BindFormMaxFiles`, `BindFormMaxFilenameLen`) injectable as options; body capped at 32 MiB by default via `http.MaxBytesReader`. See `.claude/plans/upload-file-helper.md`. Coordinated go-swagger codegen change is in flight in that repo. Follow-up: consolidate the untyped `middleware/parameter.go` formData branch onto the same helper as part of the Security scrub.
+  * ✅ **`runtime.BindForm` upload-file helper** (was Track B.3 `ParseRequestBody`) — shipped on `feat/upload-file-helper` (commit `90364c5`). Orchestrator helper that dedupes the multipart/form fallback dance plus per-file binding the generator emits; security caps (`BindFormMaxBody`, `BindFormMaxFiles`, `BindFormMaxFilenameLen`) injectable as options; body capped at 32 MiB by default via `http.MaxBytesReader`. See `.claude/plans/upload-file-helper.md`. Coordinated go-swagger codegen change is in flight in that repo. Follow-up: ✅ untyped `middleware/parameter.go` formData branch now applies the same filename-length cap via the exported `runtime.ValidateFilenameLength` helper (Lens 3 of the scrub).
   * ✅ doc site (fixes #124) [📚] [M] — Hugo scaffolding + CI publishing already wired (`hack/doc-site/`); remaining work is content polishing, which is tedious but bounded.
   * ✅ factorize into the doc site docs/FAQ.md and docs/MEDIA_TYPES.md [📚] [M]
   * ✅ **`docs/KEEP-ALIVE.md`** [📚] [M] — full educational treatment of the two-things-named-keep-alive problem: HTTP keep-alive vs TCP keepalive vs `http.Transport`'s idle pool, plus the proxy / NAT / firewall conntrack gotchas (AWS NAT 350s being the canonical example, source of issue #336). Eventual merge target is the doc site. Will explicitly surface the **misnomer** in the current API (see the v2 rename item below) so users don't keep falling into it before the rename lands. Targets a wider audience than current docs — *not just nerds fluent in kernel parameters*.
@@ -45,8 +45,8 @@ versions at release time (current policy: support the 2 latest).
   * ✅ **fixes** review and fix code quality issues detected by github (1 potential bug)
   * ✅ flaky test for httptrace (windows OS)[🏁]
   * ✅ relint code base [😇]
-  * ⏳ **Security scrub** [😇] [M] — thorough adversarial-input audit across the input-parsing surfaces (`client/` body construction + multipart, `middleware/` form / file / parameter binding, `server-middleware/mediatype` + `negotiate` parsing, `security/` auth comparisons, root codecs). Focuses on: unbounded reads (missing buffer / depth caps), input sanitisation gaps, XML XXE / JSON depth, multipart `MaxMemory` semantics, timing-safe auth comparisons, error-message leakage of user-supplied input, path-traversal in any path-joining site. **Absorbs and prioritises the previously-scheduled fuzz targets** (`mediatype.Parse`, `mediatype.MatchFirst`) and extends them to `runtime.ContentType`, header parsers, multipart boundary handling, form binding. CI fuzz wiring already exists, so each new target is incremental. Drift risk: if the audit surfaces an architectural concern (e.g. multipart backpressure), the item grows to L; flag and re-size at that point.
-  * ♥️ godoc typos scrubbing [📚]
+  * ✅ **Security scrub** [😇] [M] — audit complete across all 8 lenses; patches landed for 4 lenses, 3 lenses confirmed structurally clean, codec-depth findings parked to v2. **Lens 1 (unbounded reads) paused** mid-design awaiting a granularity decision on the server-side request-body cap (`WithMaxBody` flat vs. `WithMaxBodyByMime` mixed) — see `.claude/plans/security-scrub-lens1.md`. Patches landed: q-value > 1 reject in `expectQuality` (real bug, fuzz-surfaced); untyped formData filename cap; CRLF strip in client multipart filenames; constant-time-comparison contract on the auth-callback types + matching example fixes. **9 fuzz targets** landed across mediatype, negotiate/header, runtime.ContentType, BindForm — CI auto-discovers via the shared `go-test-monorepo` workflow. Audit log: `.claude/plans/security-scrub-log.md`.
+  * ✅ godoc typos scrubbing [📚]
   * 📝 **Decide the `v1.0.0` cut point** [XS] — what additional work, if any, must land in `v0.x` before we stamp `v1.0.0`. Default position: `v1.0.0` is the last `v0.x` minor with the SemVer marker bumped; no functional change required. Note: this is **not** a per-repo decision — `v1.0.0` is an org-wide synchronisation point across all `go-openapi` repos, gated on `runtime` and `codescan` (the last two repos still being scrubbed) finishing. `go-swagger` follows with its own `v1.0.0` on top. Only after this synchronised stamp does the `v2` work begin across the ecosystem.
 
   * ⛔ **`client.NewFromSpec(...)`** (Tracks A.2 / #33 / #385) — closed without implementation. Spec awareness belongs in codegen; bringing `loads`/`spec` into `client/` would re-introduce the dependency edge the `server-middleware/` extraction worked to remove.
@@ -321,6 +321,67 @@ The context provided by the runtime when validating a request (or a response) wo
 
 We should provide support for Webhooks. Since this is a complex project, we should provide pluggable webhooks
 capability, perhaps with a default working implementation.
+
+#### Backlog from the v0.x security scrub
+
+Items the v0.x scrub identified as real concerns but deliberately
+deferred to v2 because the right fix requires architectural change
+the non-breaking guardrail forbids in v0.x. Cross-reference:
+`.claude/plans/security-scrub.md` and
+`.claude/plans/security-scrub-log.md`.
+
+##### Server-side request-body cap [M] (Lens 1)
+
+Source: `.claude/plans/security-scrub-lens1.md`. `middleware/parameter.go:154`
+passes `request.Body` to the consumer with no `MaxBytesReader` wrap;
+the `in: formData` branch is capped via BindForm but `in: body` is
+not. The v0.x decision is open between four shapes:
+
+- **(i)** flat `middleware.WithMaxBody(n) Builder`,
+- **(ii)** `WithMaxBodyByMime(n, exempt...)` for mixed APIs,
+- **(iii)** spec-aware cap that consults the matched route's
+  `consumes` (requires pipeline refactor — clearly v2 territory),
+- **(iv)** document-only, point users at stdlib
+  `http.MaxBytesHandler`.
+
+If v0.x ships (iv) (or nothing), v2 should land (iii) inside the
+broader middleware-centric Context redesign where per-route caps
+become a first-class option on the new Context surface, not a
+late-stage Builder retrofit.
+
+##### Bounded JSON lexer + `encoding/json/v2` alternative [M] (Lens 2)
+
+Source: `[[project-v2-codec-direction]]` memory. Stdlib `encoding/json` v1
+has no depth cap; the v2 plan is a **bounded JSON lexer secure by
+design** (explicit depth, string-length, slice-prealloc caps) plus
+an **`encoding/json/v2`** alternative consumer for users who
+prefer the stdlib upgrade path. The existing `JSONConsumer` stays
+unchanged in v0.x; v2 redesigns the consumer surface so safety
+options are first-class.
+
+##### YAML parked in its own module [M] (Lens 2)
+
+Source: same. `yamlpc` parks in a separate module, possibly using
+**`goccy/go-yaml`** for lexing and bounding control rather than
+`go.yaml.in/yaml/v3`. Choice driven by goccy's better parser-level
+limits surface. The module split also removes the YAML transitive
+dependency from users who only need JSON/XML/CSV codecs.
+
+##### Codec hardening as first-class Context option [S] (Lens 2)
+
+When v2 ships the new Context surface, codec selection should
+carry per-request safety options (max depth, max string length,
+max body) rather than being implicit. The existing
+`Consumer` / `Producer` adapter pattern stays; what changes is the
+Context-level configuration surface.
+
+##### Per-operation codec policy via spec extension [S]
+
+Tracked separately from the runtime scope but worth flagging here.
+Codegen-side: a spec extension (e.g. `x-go-swagger-max-body`,
+`x-go-swagger-streaming`) lets per-operation overrides flow from
+spec → codegen → runtime Context. v2 enables this naturally; v0.x
+cannot without breaking the existing Consumer/Producer contract.
 
 ## Fixes
 

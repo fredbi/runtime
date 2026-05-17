@@ -387,6 +387,13 @@ lenses, so the eventual skill carries them forward.
   than redeclaring; the goconst linter will otherwise flag the
   duplicates. Add per-fuzz private constants only for strings
   not already in the test corpus.
+- **Put fuzz targets in a dedicated `*_fuzz_test.go` file** even
+  when they live in the same package as unit tests. Lens 3
+  surfaced the pain: splitting a lens into reviewable commits
+  (patch / patch / fuzz) requires file-level granularity since
+  `git add` is per-file. The convention also makes "show me what
+  the fuzz corpus covers" trivially `ls *_fuzz_test.go` across
+  the tree.
 
 ### Lens 5 — timing-unsafe comparisons
 
